@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, ChangeEvent, RefObject } from "react";
+import { useState, useRef, useEffect, type ChangeEvent, type CSSProperties, type RefObject } from "react";
 import { Download, RefreshCw, Share2, Camera, Check, User, Link2 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -585,6 +585,8 @@ function RoseIcon({ style }: { style?: React.CSSProperties }) {
 // ─── Vintage Identity Card ────────────────────────────────────────────────────
 const HANDWRITTEN_FONT = "'Amiri', 'Aref Ruqaa', serif";
 const TYPEWRITER_FONT = "'Amiri', 'Courier New', serif";
+const CLASSIC_CARD_DESIGN_WIDTH = 760;
+const CLASSIC_CARD_MIN_HEIGHT = 452;
 
 interface VintageTheme {
   holderLabel: string;
@@ -1006,11 +1008,67 @@ function ClassicIdentityCards({
   cardRef: RefObject<HTMLDivElement | null>;
 }) {
   const theme = getVintageTheme(gender);
+  const [mobileLayout, setMobileLayout] = useState({
+    compact: false,
+    scale: 1,
+    heights: [CLASSIC_CARD_MIN_HEIGHT, CLASSIC_CARD_MIN_HEIGHT],
+  });
+
+  useEffect(() => {
+    const updateLayout = () => {
+      const container = cardRef.current;
+      if (!container) return;
+
+      const compact = window.matchMedia("(max-width: 640px)").matches;
+      const containerWidth = container.getBoundingClientRect().width || CLASSIC_CARD_DESIGN_WIDTH;
+      const scale = compact ? Math.min(1, containerWidth / CLASSIC_CARD_DESIGN_WIDTH) : 1;
+      const faces = Array.from(container.querySelectorAll<HTMLElement>(".classic-id-face"));
+      const heights = faces.map((face) => Math.max(CLASSIC_CARD_MIN_HEIGHT, face.scrollHeight));
+      const nextHeights = [
+        heights[0] ?? CLASSIC_CARD_MIN_HEIGHT,
+        heights[1] ?? CLASSIC_CARD_MIN_HEIGHT,
+      ];
+
+      setMobileLayout((prev) => {
+        const unchanged =
+          prev.compact === compact &&
+          Math.abs(prev.scale - scale) < 0.001 &&
+          prev.heights[0] === nextHeights[0] &&
+          prev.heights[1] === nextHeights[1];
+
+        return unchanged ? prev : { compact, scale, heights: nextHeights };
+      });
+    };
+
+    updateLayout();
+    const raf = window.requestAnimationFrame(updateLayout);
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateLayout) : null;
+
+    if (cardRef.current && resizeObserver) {
+      resizeObserver.observe(cardRef.current);
+    }
+
+    window.addEventListener("resize", updateLayout);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateLayout);
+    };
+  }, [cardRef, userData, cardData, gender]);
+
+  const exportStyle = { "--classic-card-scale": mobileLayout.scale } as CSSProperties;
+  const getFaceWrapStyle = (height: number): CSSProperties | undefined =>
+    mobileLayout.compact ? { height: `${Math.ceil(height * mobileLayout.scale)}px` } : undefined;
 
   return (
-    <div ref={cardRef} className="classic-id-export">
-      <FrontFace userData={userData} cardData={cardData} gender={gender} theme={theme} />
-      <BackFace userData={userData} cardData={cardData} gender={gender} theme={theme} />
+    <div ref={cardRef} className="classic-id-export" style={exportStyle}>
+      <div className="classic-id-face-wrap" data-card-side="front" style={getFaceWrapStyle(mobileLayout.heights[0])}>
+        <FrontFace userData={userData} cardData={cardData} gender={gender} theme={theme} />
+      </div>
+      <div className="classic-id-face-wrap" data-card-side="back" style={getFaceWrapStyle(mobileLayout.heights[1])}>
+        <BackFace userData={userData} cardData={cardData} gender={gender} theme={theme} />
+      </div>
     </div>
   );
 }
@@ -1839,7 +1897,7 @@ function ResultSection({
             onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
           >
             <Download size={18} />
-            تنزيل الهوية
+            تنزيل الوجهين منفصلين
           </button>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -1947,16 +2005,24 @@ export default function App() {
     if (!cardRef.current) return;
     try {
       const html2canvas = (await import("html2canvas")).default;
-      const canvas = await html2canvas(cardRef.current, {
-        scale: 3,
-        backgroundColor: null,
-        logging: false,
-        useCORS: true,
-      });
-      const link = document.createElement("a");
-      link.download = `هويتي-الانستقرامية.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
+      const cards = Array.from(cardRef.current.querySelectorAll<HTMLElement>("[data-card-side]"));
+
+      for (const card of cards) {
+        const canvas = await html2canvas(card, {
+          scale: 3,
+          backgroundColor: null,
+          logging: false,
+          useCORS: true,
+        });
+        const sideName = card.dataset.cardSide === "back" ? "الخلفية" : "الأمامية";
+        const link = document.createElement("a");
+        link.download = `هويتي-الانستقرامية-${sideName}.png`;
+        link.href = canvas.toDataURL("image/png");
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      }
     } catch (err) {
       console.error("Download failed", err);
     }
@@ -2021,6 +2087,9 @@ export default function App() {
           width: 100%;
           align-items: start;
         }
+        .classic-id-face-wrap {
+          width: 100%;
+        }
         .classic-id-face {
           position: relative;
           overflow: hidden;
@@ -2054,15 +2123,22 @@ export default function App() {
           }
         }
         @media (max-width: 640px) {
-          .classic-id-face {
-            min-height: 610px;
-          }
-          .classic-id-inner {
-            padding: 44px 36px 38px;
-          }
-          .classic-id-body {
-            grid-template-columns: 1fr;
+          .classic-id-export {
             gap: 18px;
+          }
+          .classic-id-face-wrap {
+            position: relative;
+            aspect-ratio: ${CLASSIC_CARD_DESIGN_WIDTH} / ${CLASSIC_CARD_MIN_HEIGHT};
+            overflow: visible;
+          }
+          .classic-id-face-wrap > .classic-id-face {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: ${CLASSIC_CARD_DESIGN_WIDTH}px;
+            min-height: ${CLASSIC_CARD_MIN_HEIGHT}px;
+            transform: scale(var(--classic-card-scale, 1));
+            transform-origin: top right;
           }
         }
       `}</style>
